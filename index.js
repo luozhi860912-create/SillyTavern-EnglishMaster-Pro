@@ -1,894 +1,909 @@
-/*
- * SillyTavern Chat Article Reader Plugin
- * Reads all chat messages, parses three-line English learning format,
- * displays as articles categorized by character card name.
- */
-
 import { getContext } from '../../../extensions.js';
 
-const EXT_NAME = 'SillyTavern-ChatReader';
-const PAGE_SIZE = 50;
+const NAME = 'ChatReader';
+const STORE = 'cr_state_v2';
+const PGSZ = 50;
 
-// ========== State ==========
-let articles = [];
-let currentArticleIdx = -1;
+// ===== State =====
+let S = {
+    lastChar: '',
+    positions: {},
+    lastViewed: {},
+    settings: { deRate: 1, zhRate: 1, audioMode: 'cnenmix', showEN: true, showCN: true, showWW: true, loop: false },
+    fabPos: null,
+};
+let charCache = {};
+let charList = [];
+let selChar = '';
+let selArtIdx = -1;
 let sentIdx = 0;
 let pageNum = 0;
-let readerPlaying = false;
-let readerTimer = null;
-let speechId = 0;
+let playing = false;
+let playTimer = null;
+let spkId = 0;
 let voices = [];
-let catFilter = '全部';
-let currentView = 'list'; // 'list' | 'reader' | 'settings'
-
-let audioMode = 'cnenmix';   // cnenmix | enonly | wwonly
-let showEN = true;
-let showCN = true;
-let showWW = true;
-let loopSingle = false;
-let deRate = 1.0;
-let zhRate = 1.0;
-
+let mobileView = 'list';
 let playlistMode = false;
 let playlistIdx = 0;
-let playlistArticles = [];
-
+let playlistArts = [];
 let tipEl = null;
-let tipTimer = null;
+let tipTm = null;
+let keepAlive = null;
 
-// ========== Helpers ==========
-function esc(s) {
-    return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// ===== Helpers =====
+const $ = id => document.getElementById(id);
+const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const escA = s => (s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+const isMob = () => window.innerWidth <= 768;
+
+function toast(m) {
+    let t = $('cr-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'cr-toast'; t.className = 'cr-toast'; document.body.appendChild(t); }
+    t.textContent = m; t.classList.add('cr-show');
+    clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('cr-show'), 2500);
 }
 
-function escAttr(s) {
-    return (s || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+// ===== Persistence =====
+function loadState() { try { const d = JSON.parse(localStorage.getItem(STORE)); if (d) Object.assign(S, d); } catch(e) {} }
+function saveState() { try { localStorage.setItem(STORE, JSON.stringify(S)); } catch(e) {} }
+function savePosition() {
+    if (!selChar || selArtIdx < 0) return;
+    if (!S.positions[selChar]) S.positions[selChar] = {};
+    S.positions[selChar].articleIdx = selArtIdx;
+    S.positions[selChar].sentIdx = sentIdx;
+    S.lastChar = selChar;
+    S.lastViewed[selChar] = selArtIdx;
+    saveState();
 }
 
-function crToast(msg) {
-    let t = document.getElementById('cr-toast');
-    if (!t) {
-        t = document.createElement('div');
-        t.id = 'cr-toast';
-        t.className = 'cr-toast';
-        document.body.appendChild(t);
-    }
-    t.textContent = msg;
-    t.classList.add('cr-show');
-    clearTimeout(t._t);
-    t._t = setTimeout(() => t.classList.remove('cr-show'), 2500);
+// ===== Chat Parsing =====
+function cleanMsg(raw) {
+    let t = raw || '';
+    t = t.replace(/<prepare>[\s\S]*?<\/prepare>/gi, '');
+    t = t.replace(/<details>[\s\S]*?<\/details>/gi, '');
+    t = t.replace(/<br\s*\/?>/gi, '\n');
+    t = t.replace(/<[^>]+>/g, '');
+    const ta = document.createElement('textarea'); ta.innerHTML = t; t = ta.value;
+    const ci = t.search(/>\s*选择[：:]/);
+    if (ci > 0) t = t.substring(0, ci);
+    return t.trim();
 }
+function isEN(l) { const e = (l.match(/[a-zA-Z]/g)||[]).length, c = (l.match(/[\u4e00-\u9fff]/g)||[]).length; return e > c && e >= 3; }
+function isCN(l) { return (l.match(/[\u4e00-\u9fff]/g)||[]).length >= 2; }
+function isWW(l) { return ((l||'').match(/[a-zA-Z][a-zA-Z'\-]*\s*\([^)]*[\u4e00-\u9fff][^)]*\)/g)||[]).length >= 2; }
 
-// ========== Chat Parsing ==========
-function cleanMessageText(raw) {
-    let text = raw || '';
-    // Remove <prepare></prepare> blocks
-    text = text.replace(/<prepare>[\s\S]*?<\/prepare>/gi, '');
-    // Remove <details>...</details> blocks
-    text = text.replace(/<details>[\s\S]*?<\/details>/gi, '');
-    // Replace <br> with newlines
-    text = text.replace(/<br\s*\/?>/gi, '\n');
-    // Remove remaining HTML tags
-    text = text.replace(/<[^>]+>/g, '');
-    // Decode HTML entities
-    const ta = document.createElement('textarea');
-    ta.innerHTML = text;
-    text = ta.value;
-    // Remove choice blocks at the end
-    const choiceIdx = text.search(/>\s*选择[：:]/);
-    if (choiceIdx > 0) text = text.substring(0, choiceIdx);
-    return text.trim();
-}
-
-function isEnglishLine(line) {
-    const en = (line.match(/[a-zA-Z]/g) || []).length;
-    const cn = (line.match(/[\u4e00-\u9fff]/g) || []).length;
-    return en > cn && en >= 3;
-}
-
-function isChineseLine(line) {
-    return (line.match(/[\u4e00-\u9fff]/g) || []).length >= 2;
-}
-
-function isWWLine(line) {
-    const matches = line.match(/[a-zA-Z][a-zA-Z''\-]*\s*\([^)]*[\u4e00-\u9fff][^)]*\)/g);
-    return matches && matches.length >= 2;
-}
-
-function parseSentences(rawText) {
-    const text = cleanMessageText(rawText);
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l);
-    const sentences = [];
-
-    let i = 0;
-    while (i < lines.length - 2) {
-        const l1 = lines[i];
-        const l2 = lines[i + 1];
-        const l3 = lines[i + 2];
-
-        if (isEnglishLine(l1) && isChineseLine(l2) && isWWLine(l3)) {
-            sentences.push({ en: l1, cn: l2, ww: l3 });
-            i += 3;
-        } else if (isEnglishLine(l1) && isChineseLine(l2)) {
-            sentences.push({ en: l1, cn: l2, ww: '' });
-            i += 2;
-        } else {
-            i++;
-        }
-    }
-    // Handle remaining 2 lines
-    if (i < lines.length - 1) {
-        const l1 = lines[i], l2 = lines[i + 1];
-        if (isEnglishLine(l1) && isChineseLine(l2)) {
-            sentences.push({ en: l1, cn: l2, ww: '' });
-        }
-    }
-
-    return sentences;
-}
-
-function loadArticles() {
-    const context = getContext();
-    const chat = context.chat || [];
-    const newArticles = [];
+function parseChat(messages, charName, chatFile) {
+    const arts = [];
     let floor = 0;
-
-    for (let mi = 0; mi < chat.length; mi++) {
-        const msg = chat[mi];
+    for (let mi = 0; mi < messages.length; mi++) {
+        const msg = messages[mi];
         if (msg.is_user || msg.is_system) continue;
         if (!msg.mes || !msg.mes.trim()) continue;
-
-        const sentences = parseSentences(msg.mes);
-        if (sentences.length === 0) continue;
-
+        const text = cleanMsg(msg.mes);
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+        const sents = [];
+        let i = 0;
+        while (i < lines.length) {
+            if (i + 2 < lines.length && isEN(lines[i]) && isCN(lines[i+1]) && isWW(lines[i+2])) {
+                sents.push({ en: lines[i], cn: lines[i+1], ww: lines[i+2] }); i += 3;
+            } else if (i + 1 < lines.length && isEN(lines[i]) && isCN(lines[i+1])) {
+                sents.push({ en: lines[i], cn: lines[i+1], ww: '' }); i += 2;
+            } else { i++; }
+        }
+        if (!sents.length) continue;
         floor++;
-        const charName = msg.name || context.name2 || '未知角色';
-
-        // Try to find a title from the preceding user message
         let title = `#${floor}`;
         for (let pi = mi - 1; pi >= 0; pi--) {
-            if (chat[pi].is_user && chat[pi].mes) {
-                const userText = cleanMessageText(chat[pi].mes);
-                title = `#${floor} ${userText.substring(0, 30)}`;
+            if (messages[pi].is_user && messages[pi].mes) {
+                title = `#${floor} ${cleanMsg(messages[pi].mes).substring(0, 40)}`;
                 break;
             }
         }
-
-        newArticles.push({
-            title: title,
-            category: charName,
-            sentences: sentences,
-            msgIndex: mi,
-            floor: floor,
-        });
+        arts.push({ title, sentences: sents, floor, chatFile: chatFile || 'current', msgIndex: mi });
     }
-
-    articles = newArticles;
+    return arts;
 }
 
-// ========== TTS ==========
+// ===== API =====
+async function apiPost(urls, body) {
+    const endpoints = Array.isArray(urls) ? urls : [urls];
+    for (const url of endpoints) {
+        try {
+            const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            if (r.ok) return await r.json();
+        } catch(e) {}
+    }
+    return null;
+}
+
+async function loadCharData(name, avatar) {
+    if (charCache[name]?.loaded) return charCache[name];
+    const data = { name, avatar, articles: [], loaded: false };
+    charCache[name] = data;
+
+    // Current chat first
+    const ctx = getContext();
+    if (ctx.name2 === name && ctx.chat?.length) {
+        data.articles = parseChat(ctx.chat, name, 'current');
+    }
+
+    // Try loading all chat files via API
+    try {
+        const chatFiles = await apiPost(['/api/characters/chats', '/getallchatsofcharacter'], { avatar_url: avatar });
+        if (chatFiles && Array.isArray(chatFiles)) {
+            const currentFileName = ctx.name2 === name && ctx.chat_metadata?.file_name ? ctx.chat_metadata.file_name : '';
+            for (const cf of chatFiles) {
+                const fn = cf.file_name || cf.fileName;
+                if (!fn) continue;
+                // Skip current chat if already loaded
+                if (currentFileName && fn.includes(currentFileName)) continue;
+                try {
+                    const msgs = await apiPost(['/api/chats/get', '/getchat'], { ch_name: name, file_name: fn, avatar_url: avatar });
+                    if (msgs && Array.isArray(msgs)) {
+                        const arts = parseChat(msgs, name, fn);
+                        data.articles.push(...arts);
+                    }
+                } catch(e) {}
+            }
+            // Re-number floors
+            data.articles.forEach((a, i) => { a.floor = i + 1; });
+        }
+    } catch(e) {}
+
+    data.loaded = true;
+    return data;
+}
+
+function getCharList() {
+    try {
+        const ctx = getContext();
+        const chars = ctx.characters || [];
+        const map = {};
+        chars.forEach(c => {
+            if (c.name && !map[c.name]) map[c.name] = c.avatar || '';
+        });
+        if (ctx.name2 && !map[ctx.name2]) map[ctx.name2] = '';
+        return Object.entries(map).map(([name, avatar]) => ({ name, avatar }));
+    } catch(e) { return []; }
+}
+
+// ===== Speech =====
 function initVoices() {
     if (!window.speechSynthesis) return;
-    const load = () => { voices = speechSynthesis.getVoices(); };
-    load();
-    if (speechSynthesis.onvoiceschanged !== undefined) {
-        speechSynthesis.onvoiceschanged = load;
-    }
-    setTimeout(load, 2000);
+    const l = () => { voices = speechSynthesis.getVoices(); };
+    l(); if (speechSynthesis.onvoiceschanged !== undefined) speechSynthesis.onvoiceschanged = l;
+    setTimeout(l, 2000);
 }
-
-function findVoice(lang) {
+function findV(lang) {
     if (!voices.length) voices = speechSynthesis.getVoices();
-    const prefix = lang.split('-')[0];
-    const matches = voices.filter(v => v.lang === lang || v.lang.startsWith(prefix));
-    return matches.find(v => v.localService) || matches[0] || null;
+    const p = lang.split('-')[0];
+    const m = voices.filter(v => v.lang === lang || v.lang.startsWith(p));
+    return m.find(v => v.localService) || m[0] || null;
 }
-
-function speakOne(text, lang, rate) {
-    return new Promise(resolve => {
-        if (!window.speechSynthesis || !text?.trim()) { resolve(); return; }
+function s1(text, lang, rate) {
+    return new Promise(res => {
+        if (!window.speechSynthesis || !text?.trim()) { res(); return; }
         const u = new SpeechSynthesisUtterance(text.trim());
-        u.lang = lang;
-        u.rate = Math.max(0.1, Math.min(5, rate || 1));
-        const v = findVoice(lang);
-        if (v) u.voice = v;
-        let done = false;
-        const finish = () => { if (!done) { done = true; clearTimeout(tm); resolve(); } };
-        const tm = setTimeout(finish, Math.max(5000, text.length * 800));
-        u.onend = finish;
-        u.onerror = finish;
-        try { speechSynthesis.speak(u); } catch (e) { finish(); }
+        u.lang = lang; u.rate = Math.max(.1, Math.min(5, rate||1));
+        const v = findV(lang); if (v) u.voice = v;
+        let d = false;
+        const f = () => { if (!d) { d = true; clearTimeout(tm); res(); } };
+        const tm = setTimeout(f, Math.max(6000, text.length * 800));
+        u.onend = f; u.onerror = f;
+        try { speechSynthesis.speak(u); } catch(e) { f(); }
     });
 }
+function cs() { try { speechSynthesis.cancel(); } catch(e) {} }
+function spkWord(w) {
+    if (!w) return; cs();
+    const u = new SpeechSynthesisUtterance(w);
+    u.lang = 'en-US'; u.rate = S.settings.deRate;
+    const v = findV('en-US'); if (v) u.voice = v;
+    try { speechSynthesis.speak(u); } catch(e) {}
+}
+function stopPlay() { playing = false; clearTimeout(playTimer); cs(); spkId++; stopKeepAlive(); updateMediaSession(false); }
 
-function cancelSpeech() {
-    try { speechSynthesis.cancel(); } catch (e) { /* ignore */ }
+// ===== Background Keep-Alive =====
+function startKeepAlive() {
+    if (keepAlive) return;
+    try {
+        keepAlive = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=');
+        keepAlive.loop = true; keepAlive.volume = 0.01;
+        keepAlive.play().catch(() => {});
+    } catch(e) {}
+}
+function stopKeepAlive() { if (keepAlive) { keepAlive.pause(); keepAlive = null; } }
+function updateMediaSession(isPlaying) {
+    if (!('mediaSession' in navigator)) return;
+    try {
+        const art = getArt();
+        navigator.mediaSession.metadata = new MediaMetadata({ title: art ? art.title : 'Chat Reader', artist: selChar || '', album: 'English Reading' });
+        navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+        navigator.mediaSession.setActionHandler('play', () => togglePlay());
+        navigator.mediaSession.setActionHandler('pause', () => { stopPlay(); render(); });
+        navigator.mediaSession.setActionHandler('previoustrack', () => navSent(-1));
+        navigator.mediaSession.setActionHandler('nexttrack', () => navSent(1));
+    } catch(e) {}
 }
 
-function speakWord(word) {
-    if (!word) return;
-    cancelSpeech();
-    const u = new SpeechSynthesisUtterance(word);
-    u.lang = 'en-US';
-    u.rate = deRate;
-    const v = findVoice('en-US');
-    if (v) u.voice = v;
-    try { speechSynthesis.speak(u); } catch (e) { /* ignore */ }
-}
-
-function stopPlayback() {
-    readerPlaying = false;
-    clearTimeout(readerTimer);
-    cancelSpeech();
-    speechId++;
-}
-
-// ========== Clickable Words ==========
-function cleanWord(w) {
-    return (w || '').replace(/^[.,!?;:'"()\-–»«\[\]{}\/\\]+/, '').replace(/[.,!?;:'"()\-–»«…\[\]{}\/\\]+$/, '').trim();
-}
-
-function renderClickableEN(text) {
+// ===== Clickable Words =====
+function cleanW(w) { return (w||'').replace(/^[.,!?;:'"()\-–»«\[\]{}\/\\]+/,'').replace(/[.,!?;:'"()\-–»«…\[\]{}\/\\]+$/,'').trim(); }
+function rcEN(text) {
     if (!text) return '';
-    const clean = (text || '').replace(/\|/g, '');
-    return clean.split(/(\s+)/).map(part => {
-        if (!part) return '';
-        if (/^\s+$/.test(part)) return ' ';
-        if (/[a-zA-Z]/.test(part)) {
-            const m = part.match(/^([^a-zA-Z]*)([a-zA-Z][a-zA-Z'\-]*[a-zA-Z]|[a-zA-Z])([^a-zA-Z]*)$/);
-            if (m) {
-                return esc(m[1]) + `<span class="cr-word" data-speak="${escAttr(cleanWord(m[2]))}">${esc(m[2])}</span>` + esc(m[3]);
-            }
-            return `<span class="cr-word" data-speak="${escAttr(cleanWord(part))}">${esc(part)}</span>`;
+    return text.replace(/\|/g, '').split(/(\s+)/).map(p => {
+        if (!p) return '';
+        if (/^\s+$/.test(p)) return ' ';
+        if (/[a-zA-Z]/.test(p)) {
+            const m = p.match(/^([^a-zA-Z]*)([a-zA-Z][a-zA-Z'\u2019\-]*[a-zA-Z]|[a-zA-Z])([^a-zA-Z]*)$/);
+            if (m) return esc(m[1]) + `<span class="cr-w" data-w="${escA(cleanW(m[2]))}">${esc(m[2])}</span>` + esc(m[3]);
+            return `<span class="cr-w" data-w="${escA(cleanW(p))}">${esc(p)}</span>`;
         }
-        return esc(part);
+        return esc(p);
     }).join('');
 }
 
-// ========== Tooltip ==========
-function hideTip() {
-    if (tipEl) { tipEl.remove(); tipEl = null; }
-    if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
-}
-
+function hideTip() { if (tipEl) { tipEl.remove(); tipEl = null; } if (tipTm) { clearTimeout(tipTm); tipTm = null; } }
 function showTip(el, text) {
     hideTip();
     const r = el.getBoundingClientRect();
-    const tip = document.createElement('div');
-    tip.className = 'cr-tip';
-    tip.textContent = text;
-    tip.style.left = (r.left + r.width / 2) + 'px';
-    if (r.top > 60) {
-        tip.style.top = (r.top - 8) + 'px';
-        tip.style.transform = 'translateX(-50%) translateY(-100%)';
-    } else {
-        tip.style.top = (r.bottom + 8) + 'px';
-        tip.style.transform = 'translateX(-50%)';
-    }
-    document.body.appendChild(tip);
+    const t = document.createElement('div'); t.className = 'cr-tip'; t.textContent = text;
+    t.style.left = (r.left + r.width/2) + 'px';
+    if (r.top > 55) { t.style.top = (r.top - 6) + 'px'; t.style.transform = 'translateX(-50%) translateY(-100%)'; }
+    else { t.style.top = (r.bottom + 6) + 'px'; t.style.transform = 'translateX(-50%)'; }
+    document.body.appendChild(t);
     requestAnimationFrame(() => {
-        const tr = tip.getBoundingClientRect();
-        if (tr.right > window.innerWidth - 8) tip.style.left = (window.innerWidth - tr.width / 2 - 8) + 'px';
-        if (tr.left < 8) tip.style.left = (tr.width / 2 + 8) + 'px';
-        tip.classList.add('cr-visible');
+        const tr = t.getBoundingClientRect();
+        if (tr.right > window.innerWidth - 6) t.style.left = (window.innerWidth - tr.width/2 - 6) + 'px';
+        if (tr.left < 6) t.style.left = (tr.width/2 + 6) + 'px';
+        t.classList.add('cr-vis');
     });
-    tipEl = tip;
-    tipTimer = setTimeout(hideTip, 3500);
+    tipEl = t; tipTm = setTimeout(hideTip, 3500);
 }
-
-async function onClickWord(el) {
-    const raw = el.dataset.speak || el.textContent.trim();
-    const word = cleanWord(raw);
-    if (!word) return;
-    el.classList.add('cr-speaking');
-    setTimeout(() => el.classList.remove('cr-speaking'), 1200);
-    speakWord(word);
-
-    // Search in current article for translation
+function onClickW(el) {
+    const w = cleanW(el.dataset.w || el.textContent);
+    if (!w) return;
+    el.classList.add('cr-speaking'); setTimeout(() => el.classList.remove('cr-speaking'), 1200);
+    spkWord(w);
     hideTip();
-    let translation = '';
-    if (currentArticleIdx >= 0 && articles[currentArticleIdx]) {
-        const art = articles[currentArticleIdx];
-        for (const s of art.sentences) {
+    // Search WW lines for translation
+    let trans = '';
+    const arts = charCache[selChar]?.articles || [];
+    if (selArtIdx >= 0 && arts[selArtIdx]) {
+        for (const s of arts[selArtIdx].sentences) {
             if (!s.ww) continue;
-            const pattern = new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\(([^)]+)\\)', 'i');
-            const match = s.ww.match(pattern);
-            if (match) { translation = match[1]; break; }
+            const rx = new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\(([^)]+)\\)', 'i');
+            const mm = s.ww.match(rx);
+            if (mm) { trans = mm[1]; break; }
         }
     }
-    if (translation) {
-        showTip(el, translation);
-    } else {
-        showTip(el, word);
+    showTip(el, trans || w);
+}
+
+// ===== Getters =====
+function getArt() { const d = charCache[selChar]; return d?.articles?.[selArtIdx] || null; }
+function getSent() { const a = getArt(); return a?.sentences?.[sentIdx] || null; }
+
+// ===== UI Creation =====
+function createUI() {
+    // FAB
+    const fab = document.createElement('button');
+    fab.id = 'cr-fab'; fab.textContent = '📖';
+    const pos = S.fabPos || { x: isMob() ? Math.round(window.innerWidth/2 - 28) : window.innerWidth - 70, y: Math.round(window.innerHeight/2 - 28) };
+    fab.style.left = pos.x + 'px'; fab.style.top = pos.y + 'px';
+    document.body.appendChild(fab);
+    initDragFab(fab);
+
+    // Overlay + Window
+    const ov = document.createElement('div'); ov.id = 'cr-overlay';
+    ov.innerHTML = `<div id="cr-window">
+<div class="cr-titlebar" id="cr-titlebar">
+    <div class="cr-titlebar-left">
+        <button class="cr-titlebar-back" id="cr-back">◀</button>
+        <span class="cr-title-text" id="cr-title">📖 Chat Reader</span>
+    </div>
+    <div class="cr-titlebar-spacer"></div>
+    <button class="cr-tb" id="cr-btn-refresh" title="刷新">🔄</button>
+    <button class="cr-tb" id="cr-btn-set" title="设置">⚙️</button>
+    <button class="cr-tb" id="cr-btn-close" title="关闭">✕</button>
+</div>
+<div class="cr-body">
+    <div class="cr-sidebar" id="cr-sidebar">
+        <div class="cr-char-section"><div class="cr-char-tabs" id="cr-chars"></div></div>
+        <div class="cr-art-section" id="cr-arts"><div class="cr-sidebar-empty">点击角色卡加载文章</div></div>
+    </div>
+    <div class="cr-main" id="cr-main">
+        <div class="cr-view cr-active" id="cr-v-welcome">
+            <div class="cr-welcome"><div class="cr-welcome-icon">📖</div><h3>Chat Article Reader</h3>
+            <p>选择左侧角色卡，自动扫描所有聊天记录中的三行格式英语学习内容。<br><br>
+            点击任意英文单词可播放发音并显示翻译。<br>支持配音播放、列表播放、后台播放。</p></div>
+        </div>
+        <div class="cr-view" id="cr-v-reader">
+            <div class="cr-reader-toolbar" id="cr-toolbar"></div>
+            <div class="cr-playlist-bar" id="cr-pl"><span>📋 <b id="cr-pl-name">—</b></span><button class="cr-tb" id="cr-pl-x" style="width:26px;height:26px;font-size:.75rem">✕</button></div>
+            <div class="cr-reader-prog"><div class="cr-prog-bar"><div class="cr-prog-fill" id="cr-pf"></div></div><div class="cr-prog-info"><span id="cr-pi">0/0</span><span id="cr-pt">—</span></div></div>
+            <div class="cr-pager" id="cr-pager"></div>
+            <div class="cr-reader-body" id="cr-rbody"></div>
+            <div class="cr-controls">
+                <span class="cr-speed" id="cr-spd">${S.settings.deRate.toFixed(1)}x</span>
+                <button class="cr-ctrl" id="cr-prev">⏮</button>
+                <button class="cr-ctrl cr-play-main" id="cr-play">▶️</button>
+                <button class="cr-ctrl" id="cr-next">⏭</button>
+                <button class="cr-ctrl" id="cr-loop">🔁</button>
+                <button class="cr-ctrl" id="cr-golist">📋</button>
+            </div>
+        </div>
+        <div class="cr-view" id="cr-v-set">
+            <div class="cr-settings-body" id="cr-set"></div>
+        </div>
+    </div>
+</div>
+</div>`;
+    document.body.appendChild(ov);
+    if (!isMob()) initDragWindow();
+}
+
+// ===== Drag FAB =====
+function initDragFab(el) {
+    let dragging = false, moved = false, sx, sy, ex, ey;
+    function onS(e) {
+        dragging = true; moved = false;
+        const t = e.touches ? e.touches[0] : e;
+        sx = t.clientX; sy = t.clientY;
+        ex = parseInt(el.style.left); ey = parseInt(el.style.top);
+        e.preventDefault();
+    }
+    function onM(e) {
+        if (!dragging) return;
+        const t = e.touches ? e.touches[0] : e;
+        const dx = t.clientX - sx, dy = t.clientY - sy;
+        if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+        let nx = ex + dx, ny = ey + dy;
+        nx = Math.max(0, Math.min(window.innerWidth - 56, nx));
+        ny = Math.max(0, Math.min(window.innerHeight - 56, ny));
+        el.style.left = nx + 'px'; el.style.top = ny + 'px';
+    }
+    function onE() {
+        dragging = false;
+        S.fabPos = { x: parseInt(el.style.left), y: parseInt(el.style.top) };
+        saveState();
+        if (!moved) togglePanel();
+    }
+    el.addEventListener('mousedown', onS);
+    el.addEventListener('touchstart', onS, { passive: false });
+    document.addEventListener('mousemove', onM);
+    document.addEventListener('touchmove', onM, { passive: false });
+    document.addEventListener('mouseup', onE);
+    document.addEventListener('touchend', onE);
+}
+
+// ===== Drag Window (PC) =====
+function initDragWindow() {
+    const tb = $('cr-titlebar');
+    const win = $('cr-window');
+    if (!tb || !win) return;
+    let dragging = false, sx, sy, ox, oy;
+    tb.addEventListener('mousedown', e => {
+        if (e.target.closest('.cr-tb') || e.target.closest('.cr-titlebar-back')) return;
+        dragging = true;
+        const r = win.getBoundingClientRect();
+        sx = e.clientX; sy = e.clientY;
+        ox = r.left; oy = r.top;
+        win.style.margin = '0'; win.style.position = 'absolute';
+    });
+    document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        win.style.left = (ox + e.clientX - sx) + 'px';
+        win.style.top = (oy + e.clientY - sy) + 'px';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+}
+
+// ===== Panel Open/Close =====
+function togglePanel() {
+    const ov = $('cr-overlay');
+    if (!ov) return;
+    if (ov.classList.contains('cr-open')) { closePanel(); } else { openPanel(); }
+}
+function openPanel() {
+    const ov = $('cr-overlay');
+    if (!ov) return;
+    ov.classList.add('cr-open');
+    refreshCharList();
+    // Restore last state
+    if (S.lastChar && !selChar) {
+        selectChar(S.lastChar);
+    }
+}
+function closePanel() {
+    $('cr-overlay')?.classList.remove('cr-open');
+    if (!playing) stopPlay();
+}
+
+// ===== Char List =====
+function refreshCharList() {
+    charList = getCharList();
+    renderChars();
+    // Also refresh current char data
+    if (selChar) {
+        delete charCache[selChar]?.loaded;
+        charCache[selChar] = null;
+        selectChar(selChar);
     }
 }
 
-// ========== UI Creation ==========
-function createUI() {
-    // Floating button
-    const btn = document.createElement('button');
-    btn.id = 'cr-float-btn';
-    btn.textContent = '📖';
-    btn.title = 'Chat Reader';
-    document.body.appendChild(btn);
-
-    // Panel
-    const panel = document.createElement('div');
-    panel.id = 'cr-panel';
-    panel.innerHTML = buildPanelHTML();
-    document.body.appendChild(panel);
-
-    // Toast
-    const toast = document.createElement('div');
-    toast.id = 'cr-toast';
-    toast.className = 'cr-toast';
-    document.body.appendChild(toast);
+function renderChars() {
+    const el = $('cr-chars');
+    if (!el) return;
+    el.innerHTML = charList.map(c =>
+        `<button class="cr-char-tab${c.name === selChar ? ' cr-on' : ''}" data-ch="${escA(c.name)}" data-av="${escA(c.avatar)}">${esc(c.name)}</button>`
+    ).join('') || '<span style="color:#444;font-size:.75rem;padding:8px">无角色卡</span>';
 }
 
-function buildPanelHTML() {
-    return `
-    <!-- Top Bar -->
-    <div class="cr-topbar">
-        <button class="cr-topbar-btn" id="cr-back" style="display:none">◀</button>
-        <div class="cr-topbar-title" id="cr-title">📖 Chat Reader</div>
-        <button class="cr-topbar-btn" id="cr-refresh" title="刷新">🔄</button>
-        <button class="cr-topbar-btn" id="cr-settings-btn" title="设置">⚙️</button>
-        <button class="cr-topbar-btn" id="cr-close" title="关闭">✕</button>
-    </div>
+async function selectChar(name) {
+    const ch = charList.find(c => c.name === name);
+    if (!ch) { toast('角色不存在'); return; }
+    selChar = name;
+    S.lastChar = name; saveState();
+    renderChars();
+    $('cr-arts').innerHTML = '<div class="cr-sidebar-loading">⏳ 扫描聊天记录...</div>';
 
-    <!-- Category Filter -->
-    <div class="cr-cat-bar" id="cr-cat-bar"></div>
+    const data = await loadCharData(name, ch.avatar);
+    if (selChar !== name) return; // User switched
 
-    <!-- Views -->
-    <div class="cr-views">
-        <!-- List View -->
-        <div class="cr-list-view" id="cr-list-view"></div>
+    renderArts(data.articles);
+    if (data.articles.length === 0) {
+        $('cr-arts').innerHTML = '<div class="cr-sidebar-empty">此角色无三行格式内容</div>';
+    }
 
-        <!-- Reader View -->
-        <div class="cr-reader-view" id="cr-reader-view">
-            <div class="cr-reader-toolbar" id="cr-toolbar"></div>
-            <div class="cr-playlist-bar" id="cr-playlist" style="display:none">
-                <span>📋 列表播放: <b id="cr-pl-title">—</b></span>
-                <button class="cr-topbar-btn" id="cr-pl-close" style="width:28px;height:28px;font-size:.8rem">✕</button>
-            </div>
-            <div class="cr-reader-progress" id="cr-rprog">
-                <div class="cr-progress-bar"><div class="cr-progress-fill" id="cr-prog-fill"></div></div>
-                <div class="cr-progress-text"><span id="cr-prog-text">0/0</span><span id="cr-prog-title">—</span></div>
-            </div>
-            <div class="cr-pager" id="cr-pager"></div>
-            <div class="cr-reader-body" id="cr-reader-body"></div>
-            <div class="cr-controls" id="cr-ctrls">
-                <span class="cr-speed-btn" id="cr-speed">${deRate.toFixed(1)}x</span>
-                <button class="cr-ctrl" id="cr-prev">⏮</button>
-                <button class="cr-ctrl cr-play-btn" id="cr-play">▶️</button>
-                <button class="cr-ctrl" id="cr-next">⏭</button>
-                <button class="cr-ctrl" id="cr-loop">🔁</button>
-                <button class="cr-ctrl" id="cr-list-btn">📋</button>
-            </div>
-        </div>
-
-        <!-- Settings View -->
-        <div class="cr-reader-view" id="cr-settings-view">
-            <div class="cr-settings" id="cr-settings-body"></div>
-        </div>
-    </div>
-    `;
+    // Restore position
+    const saved = S.positions[name];
+    if (saved && saved.articleIdx >= 0 && saved.articleIdx < data.articles.length) {
+        openArt(saved.articleIdx, saved.sentIdx || 0);
+    }
 }
 
-// ========== Rendering ==========
-function renderCatBar() {
-    const cats = ['全部'];
-    articles.forEach(a => {
-        if (a.category && !cats.includes(a.category)) cats.push(a.category);
-    });
-    const bar = document.getElementById('cr-cat-bar');
-    if (!bar) return;
-    bar.innerHTML = cats.map(c =>
-        `<button class="cr-cat-btn${c === catFilter ? ' cr-active' : ''}" data-cat="${escAttr(c)}">${esc(c)} (${c === '全部' ? articles.length : articles.filter(a => a.category === c).length})</button>`
-    ).join('');
-}
-
-function renderListView() {
-    const list = document.getElementById('cr-list-view');
-    if (!list) return;
-
-    const filtered = catFilter === '全部'
-        ? articles
-        : articles.filter(a => a.category === catFilter);
-
-    if (!filtered.length) {
-        list.innerHTML = `<div class="cr-empty">
-            <div style="font-size:2rem;margin-bottom:10px">📭</div>
-            <div>暂无可读取的文章</div>
-            <div style="font-size:.78rem;margin-top:8px;color:#444">请确保聊天记录中包含三行格式的英语学习内容<br>(英文句 + 中文翻译 + 逐词标注)</div>
-        </div>`;
+function renderArts(articles) {
+    const el = $('cr-arts');
+    if (!el) return;
+    if (!articles.length) {
+        el.innerHTML = '<div class="cr-sidebar-empty">此角色无三行格式内容</div>';
         return;
     }
 
-    let html = '';
-    // Group by category
+    // Group by chatFile
     const groups = {};
-    filtered.forEach(a => {
-        if (!groups[a.category]) groups[a.category] = [];
-        groups[a.category].push(a);
+    articles.forEach((a, i) => {
+        const g = a.chatFile || 'current';
+        if (!groups[g]) groups[g] = [];
+        groups[g].push({ art: a, idx: i });
     });
 
-    for (const [cat, arts] of Object.entries(groups)) {
-        if (catFilter === '全部' && Object.keys(groups).length > 1) {
-            html += `<div style="padding:8px 12px;font-size:.78rem;color:#555;font-weight:600;margin-top:8px">📁 ${esc(cat)} (${arts.length})</div>`;
+    const lastViewed = S.lastViewed[selChar];
+    let html = '';
+    for (const [file, items] of Object.entries(groups)) {
+        if (Object.keys(groups).length > 1) {
+            const label = file === 'current' ? '📍 当前聊天' : `📄 ${file.substring(0, 25)}`;
+            html += `<div class="cr-art-chat-label">${esc(label)}</div>`;
         }
-        arts.forEach(a => {
-            const idx = articles.indexOf(a);
-            const isPlaying = currentArticleIdx === idx;
-            html += `<div class="cr-art-card${isPlaying ? ' cr-playing' : ''}" data-artidx="${idx}">
-                <div class="cr-art-num">${a.floor}</div>
-                <div class="cr-art-info">
-                    <div class="cr-art-title">${esc(a.title)}</div>
-                    <div class="cr-art-meta">${a.sentences.length} 句</div>
-                </div>
-                <span class="cr-art-cat">${esc(a.category)}</span>
+        items.forEach(({ art, idx }) => {
+            const isCur = idx === selArtIdx;
+            const isLast = idx === lastViewed && !isCur;
+            html += `<div class="cr-art-card${isCur ? ' cr-playing' : ''}${isLast ? ' cr-last-viewed' : ''}" data-ai="${idx}">
+                <div class="cr-art-num">${art.floor}</div>
+                <div class="cr-art-info"><div class="cr-art-name">${esc(art.title)}</div><div class="cr-art-meta">${art.sentences.length}句</div></div>
+                <span class="cr-art-badge">${art.sentences.length}</span>
             </div>`;
         });
     }
 
-    // Playlist button
-    if (filtered.length > 1) {
-        html += `<div style="text-align:center;padding:12px">
-            <button class="cr-topbar-btn" id="cr-play-all" style="width:auto;padding:8px 20px;font-size:.78rem;border-radius:20px">
-                ▶️ 列表播放 (${filtered.length}篇)
-            </button>
-        </div>`;
-    }
+    // Continuous play button
+    html += `<div style="text-align:center;padding:14px">
+        <button class="cr-tb" id="cr-playall" style="width:auto;padding:8px 20px;border-radius:20px;font-size:.75rem">
+            ▶️ 连续播放全部 (${articles.length}篇)
+        </button>
+    </div>`;
 
-    list.innerHTML = html;
+    el.innerHTML = html;
 }
 
+// ===== Open Article =====
+function openArt(idx, startSent) {
+    const data = charCache[selChar];
+    if (!data || !data.articles[idx]) return;
+    selArtIdx = idx;
+    sentIdx = startSent || 0;
+    pageNum = Math.floor(sentIdx / PGSZ);
+
+    S.lastViewed[selChar] = idx;
+    savePosition();
+
+    showView('reader');
+    render();
+
+    // On mobile, switch to reader
+    if (isMob()) {
+        mobileView = 'reader';
+        $('cr-sidebar')?.classList.add('cr-mob-hide');
+        $('cr-main')?.classList.remove('cr-mob-hide');
+        $('cr-back').style.display = 'flex';
+        $('cr-title').textContent = data.articles[idx].title;
+    }
+
+    // Refresh art list to show active
+    renderArts(data.articles);
+}
+
+// ===== View Switching =====
+function showView(v) {
+    ['cr-v-welcome', 'cr-v-reader', 'cr-v-set'].forEach(id => {
+        $(id)?.classList.toggle('cr-active', id === `cr-v-${v === 'reader' ? 'reader' : v === 'settings' ? 'set' : 'welcome'}`);
+    });
+}
+
+function goBackToList() {
+    stopPlay();
+    if (isMob()) {
+        mobileView = 'list';
+        $('cr-sidebar')?.classList.remove('cr-mob-hide');
+        $('cr-main')?.classList.add('cr-mob-hide');
+        $('cr-back').style.display = 'none';
+        $('cr-title').textContent = '📖 Chat Reader';
+    }
+}
+
+// ===== Render Reader =====
 function renderToolbar() {
-    const tb = document.getElementById('cr-toolbar');
+    const tb = $('cr-toolbar');
     if (!tb) return;
+    const s = S.settings;
     tb.innerHTML = `
-        <button class="cr-rtb${audioMode === 'cnenmix' ? ' cr-active' : ''}" data-audio="cnenmix">🔊中英</button>
-        <button class="cr-rtb${audioMode === 'enonly' ? ' cr-active' : ''}" data-audio="enonly">🔊纯英</button>
-        <button class="cr-rtb${audioMode === 'wwonly' ? ' cr-active' : ''}" data-audio="wwonly">🔊词汇</button>
+        <button class="cr-rtb${s.audioMode==='cnenmix'?' cr-on':''}" data-am="cnenmix">🔊中英</button>
+        <button class="cr-rtb${s.audioMode==='enonly'?' cr-on':''}" data-am="enonly">🔊纯英</button>
+        <button class="cr-rtb${s.audioMode==='wwonly'?' cr-on':''}" data-am="wwonly">🔊词汇</button>
         <span class="cr-rtb-sep"></span>
-        <button class="cr-rtb${showEN ? ' cr-active' : ''}" data-show="en">📝英文</button>
-        <button class="cr-rtb${showCN ? ' cr-active' : ''}" data-show="cn">📝中文</button>
-        <button class="cr-rtb${showWW ? ' cr-active' : ''}" data-show="ww">📝词汇</button>
+        <button class="cr-rtb${s.showEN?' cr-on':''}" data-sh="en">📝英文</button>
+        <button class="cr-rtb${s.showCN?' cr-on':''}" data-sh="cn">📝中文</button>
+        <button class="cr-rtb${s.showWW?' cr-on':''}" data-sh="ww">📝词汇</button>
         <span class="cr-rtb-sep"></span>
-        <button class="cr-rtb${loopSingle ? ' cr-active' : ''}" data-toggle="loop">🔁循环</button>
+        <button class="cr-rtb${s.loop?' cr-on':''}" data-tog="loop">🔁循环</button>
     `;
 }
 
-function renderReader() {
-    if (currentArticleIdx < 0 || !articles[currentArticleIdx]) return;
-    const art = articles[currentArticleIdx];
-    const sents = art.sentences;
-    const totalPages = Math.ceil(sents.length / PAGE_SIZE);
-
-    // Ensure page contains active sentence
-    const activePage = Math.floor(sentIdx / PAGE_SIZE);
-    if (readerPlaying && pageNum !== activePage) pageNum = activePage;
-    if (pageNum >= totalPages) pageNum = totalPages - 1;
+function render() {
+    const art = getArt();
+    if (!art) return;
+    const ss = art.sentences;
+    const tp = Math.ceil(ss.length / PGSZ);
+    const ap = Math.floor(sentIdx / PGSZ);
+    if (playing && pageNum !== ap) pageNum = ap;
+    if (pageNum >= tp) pageNum = tp - 1;
     if (pageNum < 0) pageNum = 0;
-
-    const pageStart = pageNum * PAGE_SIZE;
-    const pageEnd = Math.min(pageStart + PAGE_SIZE, sents.length);
+    const ps = pageNum * PGSZ, pe = Math.min(ps + PGSZ, ss.length);
 
     // Progress
-    const progFill = document.getElementById('cr-prog-fill');
-    const progText = document.getElementById('cr-prog-text');
-    const progTitle = document.getElementById('cr-prog-title');
-    if (progFill) progFill.style.width = Math.round((sentIdx + 1) / sents.length * 100) + '%';
-    if (progText) progText.textContent = `${sentIdx + 1}/${sents.length}`;
-    if (progTitle) progTitle.textContent = art.title;
+    const pf = $('cr-pf'); if (pf) pf.style.width = Math.round((sentIdx+1)/ss.length*100)+'%';
+    const pi = $('cr-pi'); if (pi) pi.textContent = `${sentIdx+1}/${ss.length}`;
+    const pt = $('cr-pt'); if (pt) pt.textContent = art.title;
 
     // Pager
-    const pager = document.getElementById('cr-pager');
-    if (pager) {
-        if (totalPages > 1) {
-            let ph = `<button class="cr-pg-btn" data-pg="0" ${pageNum === 0 ? 'disabled' : ''}>⏮</button>`;
-            ph += `<button class="cr-pg-btn" data-pg="${pageNum - 1}" ${pageNum === 0 ? 'disabled' : ''}>◀</button>`;
-            const maxBtns = 5;
-            let sp = Math.max(0, pageNum - 2), ep = Math.min(totalPages, sp + maxBtns);
-            if (ep - sp < maxBtns) sp = Math.max(0, ep - maxBtns);
-            for (let p = sp; p < ep; p++) {
-                ph += `<button class="cr-pg-btn${p === pageNum ? ' cr-pg-active' : ''}" data-pg="${p}">${p + 1}</button>`;
-            }
-            ph += `<button class="cr-pg-btn" data-pg="${pageNum + 1}" ${pageNum >= totalPages - 1 ? 'disabled' : ''}>▶</button>`;
-            ph += `<button class="cr-pg-btn" data-pg="${totalPages - 1}" ${pageNum >= totalPages - 1 ? 'disabled' : ''}>⏭</button>`;
-            ph += `<span class="cr-pg-info">${pageStart + 1}-${pageEnd}/${sents.length}</span>`;
-            pager.innerHTML = ph;
-            pager.style.display = '';
-        } else {
-            pager.innerHTML = '';
-            pager.style.display = 'none';
-        }
+    const pg = $('cr-pager');
+    if (pg) {
+        if (tp > 1) {
+            let h = `<button class="cr-pg" data-p="0" ${pageNum===0?'disabled':''}>⏮</button>`;
+            h += `<button class="cr-pg" data-p="${pageNum-1}" ${pageNum===0?'disabled':''}>◀</button>`;
+            const mx = 5; let sp = Math.max(0, pageNum-2), ep = Math.min(tp, sp+mx);
+            if (ep-sp < mx) sp = Math.max(0, ep-mx);
+            for (let p = sp; p < ep; p++) h += `<button class="cr-pg${p===pageNum?' cr-on':''}" data-p="${p}">${p+1}</button>`;
+            h += `<button class="cr-pg" data-p="${pageNum+1}" ${pageNum>=tp-1?'disabled':''}>▶</button>`;
+            h += `<button class="cr-pg" data-p="${tp-1}" ${pageNum>=tp-1?'disabled':''}>⏭</button>`;
+            h += `<span class="cr-pg-info">${ps+1}-${pe}/${ss.length}</span>`;
+            pg.innerHTML = h; pg.classList.add('cr-show');
+        } else { pg.innerHTML = ''; pg.classList.remove('cr-show'); }
     }
 
     // Sentences
-    const body = document.getElementById('cr-reader-body');
-    if (body) {
-        let html = '';
-        for (let i = pageStart; i < pageEnd; i++) {
-            const s = sents[i];
-            const isActive = i === sentIdx;
-            const isPlayed = i < sentIdx;
-            let cls = 'cr-sentence';
-            if (isActive) cls += ' cr-active-s';
-            if (isPlayed) cls += ' cr-played-s';
-            const enText = (s.en || '').replace(/\|/g, '');
-            const cnText = (s.cn || '').replace(/\|/g, '');
-            const wwText = (s.ww || '').replace(/\|/g, '');
-
-            html += `<div class="${cls}" data-si="${i}">
-                <span class="cr-sent-num">#${i + 1}</span>
-                <div class="cr-sent-en${showEN ? '' : ' cr-hidden'}">${renderClickableEN(enText)}</div>
-                <div class="cr-sent-cn${showCN ? '' : ' cr-hidden'}">${esc(cnText)}</div>
-                ${wwText ? `<div class="cr-sent-ww${showWW ? '' : ' cr-hidden'}">${renderClickableEN(wwText)}</div>` : ''}
+    const bd = $('cr-rbody');
+    if (bd) {
+        const stg = S.settings;
+        let h = '';
+        for (let i = ps; i < pe; i++) {
+            const s = ss[i];
+            const ac = i === sentIdx, pl = i < sentIdx;
+            let cls = 'cr-sent'; if (ac) cls += ' cr-active-s'; if (pl) cls += ' cr-played-s';
+            h += `<div class="${cls}" data-si="${i}"><span class="cr-sent-n">#${i+1}</span>
+                <div class="cr-s-en${stg.showEN?'':' cr-hide'}">${rcEN((s.en||'').replace(/\|/g,''))}</div>
+                <div class="cr-s-cn${stg.showCN?'':' cr-hide'}">${esc((s.cn||'').replace(/\|/g,''))}</div>
+                ${s.ww ? `<div class="cr-s-ww${stg.showWW?'':' cr-hide'}">${rcEN((s.ww||'').replace(/\|/g,''))}</div>` : ''}
             </div>`;
         }
-        body.innerHTML = html;
+        bd.innerHTML = h;
         setTimeout(() => {
-            const active = body.querySelector('.cr-active-s');
-            if (active) active.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const ac = bd.querySelector('.cr-active-s');
+            if (ac) ac.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 80);
     }
 
-    // Controls state
-    const playBtn = document.getElementById('cr-play');
-    if (playBtn) {
-        playBtn.textContent = readerPlaying ? '⏸' : '▶️';
-        playBtn.classList.toggle('cr-playing', readerPlaying);
-    }
-    const loopBtn = document.getElementById('cr-loop');
-    if (loopBtn) loopBtn.classList.toggle('cr-loop-active', loopSingle);
-    const speedBtn = document.getElementById('cr-speed');
-    if (speedBtn) speedBtn.textContent = deRate.toFixed(1) + 'x';
+    // Controls
+    const pb = $('cr-play');
+    if (pb) { pb.textContent = playing ? '⏸' : '▶️'; pb.classList.toggle('cr-on', playing); }
+    const lb = $('cr-loop');
+    if (lb) lb.classList.toggle('cr-loop-on', S.settings.loop);
+    const sp = $('cr-spd');
+    if (sp) sp.textContent = S.settings.deRate.toFixed(1) + 'x';
 
     // Playlist bar
-    const plBar = document.getElementById('cr-playlist');
-    if (plBar) {
+    const plb = $('cr-pl');
+    if (plb) {
         if (playlistMode) {
-            plBar.style.display = '';
-            const plTitle = document.getElementById('cr-pl-title');
-            if (plTitle) plTitle.textContent = `${art.title} (${playlistIdx + 1}/${playlistArticles.length})`;
+            plb.classList.add('cr-show');
+            const pln = $('cr-pl-name');
+            if (pln) pln.textContent = `${art.title} (${playlistIdx+1}/${playlistArts.length})`;
         } else {
-            plBar.style.display = 'none';
+            plb.classList.remove('cr-show');
         }
     }
 
     renderToolbar();
 }
 
-function renderSettings() {
-    const body = document.getElementById('cr-settings-body');
-    if (!body) return;
-    body.innerHTML = `
-        <div style="font-size:1rem;font-weight:600;margin-bottom:14px;color:#ddd">⚙️ 设置</div>
-        <div class="cr-set-item">
-            <span class="cr-set-label">英语语速</span>
-            <div style="display:flex;align-items:center;gap:8px">
-                <input type="range" id="cr-de-rate" min="0.5" max="2.5" step="0.1" value="${deRate}">
-                <span class="cr-set-val" id="cr-de-val">${deRate.toFixed(1)}x</span>
-            </div>
-        </div>
-        <div class="cr-set-item">
-            <span class="cr-set-label">中文语速</span>
-            <div style="display:flex;align-items:center;gap:8px">
-                <input type="range" id="cr-zh-rate" min="0.5" max="2.5" step="0.1" value="${zhRate}">
-                <span class="cr-set-val" id="cr-zh-val">${zhRate.toFixed(1)}x</span>
-            </div>
-        </div>
-        <div class="cr-set-item">
-            <span class="cr-set-label">每页句数</span>
-            <span class="cr-set-val">${PAGE_SIZE}</span>
-        </div>
-        <div style="margin-top:20px;padding:14px;background:#1a1a28;border-radius:10px;font-size:.78rem;color:#666;line-height:1.8">
-            <div style="font-weight:600;color:#888;margin-bottom:6px">📖 使用说明</div>
-            <div>• 本插件读取当前聊天中所有AI回复</div>
-            <div>• 自动解析三行格式：英文 + 中文翻译 + 逐词标注</div>
-            <div>• 点击任意英文单词可播放发音并显示翻译</div>
-            <div>• 文章分类按角色卡名称自动归类</div>
-            <div>• 在酒馆中删除消息后刷新即可同步</div>
-            <div>• 支持配音播放、单句循环、列表播放</div>
-            <div style="margin-top:8px;color:#555">版本 1.0.0</div>
-        </div>
-    `;
-}
-
-// ========== View Switching ==========
-function switchToView(view) {
-    currentView = view;
-    const listView = document.getElementById('cr-list-view');
-    const readerView = document.getElementById('cr-reader-view');
-    const settingsView = document.getElementById('cr-settings-view');
-    const backBtn = document.getElementById('cr-back');
-    const catBar = document.getElementById('cr-cat-bar');
-    const titleEl = document.getElementById('cr-title');
-
-    if (listView) listView.classList.toggle('cr-slide-out', view !== 'list');
-    if (readerView) readerView.classList.toggle('cr-slide-in', view === 'reader');
-    if (settingsView) settingsView.classList.toggle('cr-slide-in', view === 'settings');
-    if (backBtn) backBtn.style.display = view === 'list' ? 'none' : '';
-    if (catBar) catBar.style.display = view === 'list' ? '' : 'none';
-
-    if (view === 'list') {
-        if (titleEl) titleEl.textContent = '📖 Chat Reader';
-        stopPlayback();
-        renderListView();
-    } else if (view === 'reader') {
-        if (titleEl && currentArticleIdx >= 0 && articles[currentArticleIdx]) {
-            titleEl.textContent = articles[currentArticleIdx].title;
-        }
-        renderReader();
-    } else if (view === 'settings') {
-        if (titleEl) titleEl.textContent = '⚙️ 设置';
-        renderSettings();
-    }
-}
-
-function openArticle(idx) {
-    if (idx < 0 || idx >= articles.length) return;
-    currentArticleIdx = idx;
-    sentIdx = 0;
-    pageNum = 0;
-    switchToView('reader');
-}
-
-// ========== Playback ==========
+// ===== Playback =====
 function togglePlay() {
-    if (readerPlaying) {
-        stopPlayback();
-        renderReader();
-        return;
-    }
-    if (currentArticleIdx < 0 || !articles[currentArticleIdx]) return;
-    readerPlaying = true;
+    if (playing) { stopPlay(); render(); return; }
+    const art = getArt();
+    if (!art) { toast('请先选择文章'); return; }
+    playing = true;
+    startKeepAlive();
+    updateMediaSession(true);
     playStep();
 }
 
 async function playStep() {
-    if (!readerPlaying || currentArticleIdx < 0) return;
-    const art = articles[currentArticleIdx];
-    if (!art || sentIdx >= art.sentences.length) {
-        handleArticleEnd();
-        return;
-    }
+    if (!playing) return;
+    const art = getArt();
+    if (!art || sentIdx >= art.sentences.length) { handleEnd(); return; }
 
-    // Auto-page
-    const neededPage = Math.floor(sentIdx / PAGE_SIZE);
-    if (neededPage !== pageNum) pageNum = neededPage;
-    renderReader();
+    const np = Math.floor(sentIdx / PGSZ);
+    if (np !== pageNum) pageNum = np;
+    render();
+    savePosition();
 
     const s = art.sentences[sentIdx];
-    const en = (s.en || '').replace(/\|/g, '');
-    const cn = (s.cn || '').replace(/\|/g, '');
+    const en = (s.en||'').replace(/\|/g,'');
+    const cn = (s.cn||'').replace(/\|/g,'');
+    const am = S.settings.audioMode;
 
-    speechId++;
-    const myId = speechId;
-    cancelSpeech();
-    await new Promise(r => setTimeout(r, 80));
-    if (speechId !== myId || !readerPlaying) return;
+    spkId++; const myId = spkId;
+    cs(); await new Promise(r => setTimeout(r, 60));
+    if (spkId !== myId || !playing) return;
 
-    if (audioMode === 'wwonly' && s.ww) {
-        // Play word-by-word pairs
-        const pairs = (s.ww || '').match(/([a-zA-Z][a-zA-Z'\-]*)\s*\(([^)]+)\)/g) || [];
+    if (am === 'wwonly' && s.ww) {
+        const pairs = (s.ww||'').match(/([a-zA-Z][a-zA-Z'\u2019\-]*)\s*\(([^)]+)\)/g) || [];
         for (const pair of pairs) {
-            if (speechId !== myId || !readerPlaying) return;
-            const mm = pair.match(/([a-zA-Z][a-zA-Z'\-]*)\s*\(([^)]+)\)/);
+            if (spkId !== myId || !playing) return;
+            const mm = pair.match(/([a-zA-Z][a-zA-Z'\u2019\-]*)\s*\(([^)]+)\)/);
             if (mm) {
-                await speakOne(mm[1], 'en-US', deRate);
-                if (speechId !== myId || !readerPlaying) return;
-                await speakOne(mm[2], 'zh-CN', zhRate);
-                if (speechId !== myId || !readerPlaying) return;
+                await s1(mm[1], 'en-US', S.settings.deRate);
+                if (spkId !== myId || !playing) return;
+                await s1(mm[2], 'zh-CN', S.settings.zhRate);
+                if (spkId !== myId || !playing) return;
             }
         }
     } else {
-        await speakOne(en, 'en-US', deRate);
-        if (speechId !== myId || !readerPlaying) return;
-        if (audioMode === 'cnenmix' && cn) {
-            await speakOne(cn, 'zh-CN', zhRate);
-            if (speechId !== myId || !readerPlaying) return;
+        await s1(en, 'en-US', S.settings.deRate);
+        if (spkId !== myId || !playing) return;
+        if (am === 'cnenmix' && cn) {
+            await s1(cn, 'zh-CN', S.settings.zhRate);
+            if (spkId !== myId || !playing) return;
         }
     }
 
-    readerTimer = setTimeout(() => {
-        if (!readerPlaying) return;
+    playTimer = setTimeout(() => {
+        if (!playing) return;
         sentIdx++;
-        if (sentIdx >= art.sentences.length) {
-            handleArticleEnd();
-        } else {
-            playStep();
-        }
+        if (sentIdx >= art.sentences.length) handleEnd();
+        else playStep();
     }, 600);
 }
 
-function handleArticleEnd() {
-    if (loopSingle) {
-        sentIdx = 0;
-        playStep();
-    } else if (playlistMode) {
-        playlistIdx++;
-        if (playlistIdx >= playlistArticles.length) {
-            playlistIdx = 0;
-            crToast('🎉 列表播放完成');
-            stopPlayback();
-            renderReader();
-            return;
-        }
-        currentArticleIdx = articles.indexOf(playlistArticles[playlistIdx]);
-        sentIdx = 0;
-        playStep();
-    } else {
-        sentIdx = 0;
-        crToast('🎉 播放完成');
-        stopPlayback();
-        renderReader();
+function handleEnd() {
+    const data = charCache[selChar];
+    if (!data) { stopPlay(); render(); return; }
+
+    if (S.settings.loop) {
+        sentIdx = 0; playStep(); return;
     }
+
+    if (playlistMode) {
+        playlistIdx++;
+        if (playlistIdx >= playlistArts.length) {
+            playlistIdx = 0; toast('🎉 列表播放完成');
+            stopPlay(); playlistMode = false; render(); return;
+        }
+        selArtIdx = data.articles.indexOf(playlistArts[playlistIdx]);
+        sentIdx = 0;
+        savePosition();
+        playStep(); return;
+    }
+
+    // Continuous play: go to next article of same character
+    if (selArtIdx + 1 < data.articles.length) {
+        selArtIdx++;
+        sentIdx = 0;
+        savePosition();
+        renderArts(data.articles);
+        playStep(); return;
+    }
+
+    sentIdx = 0; toast('🎉 全部播放完成');
+    stopPlay(); render();
 }
 
-function navSentence(dir) {
-    if (currentArticleIdx < 0 || !articles[currentArticleIdx]) return;
-    stopPlayback();
-    const art = articles[currentArticleIdx];
+function navSent(dir) {
+    const art = getArt(); if (!art) return;
+    stopPlay();
     sentIdx += dir;
     if (sentIdx < 0) sentIdx = art.sentences.length - 1;
     if (sentIdx >= art.sentences.length) sentIdx = 0;
-    renderReader();
+    savePosition();
+    render();
+    // Speak current sentence
+    const s = art.sentences[sentIdx];
+    if (s) {
+        cs();
+        s1((s.en||'').replace(/\|/g,''), 'en-US', S.settings.deRate).then(() => {
+            if (S.settings.audioMode === 'cnenmix' && s.cn) s1((s.cn||'').replace(/\|/g,''), 'zh-CN', S.settings.zhRate);
+        });
+    }
 }
 
-function startPlaylist() {
-    const filtered = catFilter === '全部'
-        ? [...articles]
-        : articles.filter(a => a.category === catFilter);
-    if (!filtered.length) { crToast('无文章'); return; }
-    playlistArticles = filtered;
+function startPlaylistAll() {
+    const data = charCache[selChar];
+    if (!data || !data.articles.length) { toast('无文章'); return; }
+    playlistArts = [...data.articles];
     playlistIdx = 0;
     playlistMode = true;
-    currentArticleIdx = articles.indexOf(filtered[0]);
+    selArtIdx = 0;
     sentIdx = 0;
-    switchToView('reader');
-    readerPlaying = true;
+    showView('reader');
+    if (isMob()) {
+        mobileView = 'reader';
+        $('cr-sidebar')?.classList.add('cr-mob-hide');
+        $('cr-main')?.classList.remove('cr-mob-hide');
+        $('cr-back').style.display = 'flex';
+    }
+    playing = true;
+    startKeepAlive();
+    updateMediaSession(true);
     playStep();
 }
 
-function stopPlaylistMode() {
-    playlistMode = false;
-    stopPlayback();
-    renderReader();
+// ===== Settings =====
+function renderSettings() {
+    const el = $('cr-set');
+    if (!el) return;
+    const s = S.settings;
+    el.innerHTML = `
+        <div style="font-size:1rem;font-weight:600;color:#ccc;margin-bottom:14px">⚙️ 设置</div>
+        <div class="cr-set-row"><label>英语语速</label><div style="display:flex;align-items:center;gap:8px"><input type="range" id="cr-s-dr" min="0.5" max="2.5" step="0.1" value="${s.deRate}"><span class="cr-val" id="cr-v-dr">${s.deRate.toFixed(1)}x</span></div></div>
+        <div class="cr-set-row"><label>中文语速</label><div style="display:flex;align-items:center;gap:8px"><input type="range" id="cr-s-zr" min="0.5" max="2.5" step="0.1" value="${s.zhRate}"><span class="cr-val" id="cr-v-zr">${s.zhRate.toFixed(1)}x</span></div></div>
+        <div class="cr-set-info">
+            <div style="font-weight:600;color:#777;margin-bottom:6px">📖 使用说明</div>
+            <div>• 自动扫描所有角色卡的聊天记录</div>
+            <div>• 识别三行格式：英文 + 中文翻译 + 逐词标注</div>
+            <div>• 点击任意英文单词播放发音并显示翻译</div>
+            <div>• 支持连续播放同一角色的所有文章</div>
+            <div>• 切出浏览器后继续后台播放</div>
+            <div>• 自动记录阅读位置和播放进度</div>
+            <div>• 浮动按钮可拖动到任意位置</div>
+            <div style="margin-top:8px;color:#444">v2.0.0</div>
+        </div>
+    `;
 }
 
-// ========== Events ==========
+// ===== Events =====
 function bindEvents() {
-    // Float button
-    document.getElementById('cr-float-btn')?.addEventListener('click', () => {
-        const panel = document.getElementById('cr-panel');
-        if (!panel) return;
-        if (panel.classList.contains('cr-open')) {
-            panel.classList.remove('cr-open');
-        } else {
-            loadArticles();
-            renderCatBar();
-            switchToView('list');
-            panel.classList.add('cr-open');
-        }
-    });
-
     // Close
-    document.getElementById('cr-close')?.addEventListener('click', () => {
-        stopPlayback();
-        document.getElementById('cr-panel')?.classList.remove('cr-open');
-    });
+    $('cr-btn-close')?.addEventListener('click', closePanel);
+    $('cr-overlay')?.addEventListener('click', e => { if (e.target.id === 'cr-overlay') closePanel(); });
 
     // Back
-    document.getElementById('cr-back')?.addEventListener('click', () => {
-        stopPlayback();
-        switchToView('list');
-    });
+    $('cr-back')?.addEventListener('click', goBackToList);
 
     // Refresh
-    document.getElementById('cr-refresh')?.addEventListener('click', () => {
-        loadArticles();
-        renderCatBar();
-        if (currentView === 'list') renderListView();
-        crToast(`🔄 已刷新: ${articles.length} 篇`);
+    $('cr-btn-refresh')?.addEventListener('click', () => {
+        charCache = {};
+        refreshCharList();
+        if (selChar) selectChar(selChar);
+        toast('🔄 已刷新');
     });
 
     // Settings
-    document.getElementById('cr-settings-btn')?.addEventListener('click', () => {
-        if (currentView === 'settings') {
-            switchToView('list');
+    $('cr-btn-set')?.addEventListener('click', () => {
+        const sv = $('cr-v-set');
+        if (sv?.classList.contains('cr-active')) {
+            showView(selArtIdx >= 0 ? 'reader' : 'welcome');
         } else {
-            switchToView('settings');
+            renderSettings();
+            showView('settings');
+            if (isMob()) {
+                $('cr-sidebar')?.classList.add('cr-mob-hide');
+                $('cr-main')?.classList.remove('cr-mob-hide');
+                $('cr-back').style.display = 'flex';
+                $('cr-title').textContent = '⚙️ 设置';
+            }
         }
     });
 
-    // Category filter
-    document.getElementById('cr-cat-bar')?.addEventListener('click', e => {
-        const btn = e.target.closest('.cr-cat-btn');
-        if (!btn) return;
-        catFilter = btn.dataset.cat;
-        renderCatBar();
-        renderListView();
+    // Character tabs
+    $('cr-chars')?.addEventListener('click', e => {
+        const btn = e.target.closest('.cr-char-tab');
+        if (btn) selectChar(btn.dataset.ch);
     });
 
-    // Article list clicks
-    document.getElementById('cr-list-view')?.addEventListener('click', e => {
+    // Article list
+    $('cr-arts')?.addEventListener('click', e => {
         const card = e.target.closest('.cr-art-card');
-        if (card) {
-            openArticle(parseInt(card.dataset.artidx));
-            return;
-        }
-        if (e.target.id === 'cr-play-all' || e.target.closest('#cr-play-all')) {
-            startPlaylist();
-        }
+        if (card) { openArt(parseInt(card.dataset.ai)); return; }
+        if (e.target.id === 'cr-playall' || e.target.closest('#cr-playall')) { startPlaylistAll(); }
     });
 
-    // Reader toolbar
-    document.getElementById('cr-toolbar')?.addEventListener('click', e => {
+    // Toolbar
+    $('cr-toolbar')?.addEventListener('click', e => {
         const btn = e.target.closest('.cr-rtb');
         if (!btn) return;
-        if (btn.dataset.audio) {
-            audioMode = btn.dataset.audio;
-            renderReader();
-        }
-        if (btn.dataset.show === 'en') { showEN = !showEN; renderReader(); }
-        if (btn.dataset.show === 'cn') { showCN = !showCN; renderReader(); }
-        if (btn.dataset.show === 'ww') { showWW = !showWW; renderReader(); }
-        if (btn.dataset.toggle === 'loop') { loopSingle = !loopSingle; renderReader(); }
-    });
-
-    // Reader controls
-    document.getElementById('cr-play')?.addEventListener('click', togglePlay);
-    document.getElementById('cr-prev')?.addEventListener('click', () => navSentence(-1));
-    document.getElementById('cr-next')?.addEventListener('click', () => navSentence(1));
-    document.getElementById('cr-loop')?.addEventListener('click', () => { loopSingle = !loopSingle; renderReader(); });
-    document.getElementById('cr-list-btn')?.addEventListener('click', () => { stopPlayback(); switchToView('list'); });
-    document.getElementById('cr-speed')?.addEventListener('click', () => {
-        const speeds = [0.5, 0.7, 0.8, 1.0, 1.2, 1.5, 2.0];
-        const ci = speeds.indexOf(deRate);
-        deRate = speeds[(ci + 1) % speeds.length];
-        renderReader();
+        if (btn.dataset.am) { S.settings.audioMode = btn.dataset.am; saveState(); render(); }
+        if (btn.dataset.sh === 'en') { S.settings.showEN = !S.settings.showEN; saveState(); render(); }
+        if (btn.dataset.sh === 'cn') { S.settings.showCN = !S.settings.showCN; saveState(); render(); }
+        if (btn.dataset.sh === 'ww') { S.settings.showWW = !S.settings.showWW; saveState(); render(); }
+        if (btn.dataset.tog === 'loop') { S.settings.loop = !S.settings.loop; saveState(); render(); }
     });
 
     // Pager
-    document.getElementById('cr-pager')?.addEventListener('click', e => {
-        const btn = e.target.closest('.cr-pg-btn');
+    $('cr-pager')?.addEventListener('click', e => {
+        const btn = e.target.closest('.cr-pg');
         if (btn && !btn.disabled) {
-            pageNum = parseInt(btn.dataset.pg);
-            renderReader();
-            document.getElementById('cr-reader-body')?.scrollTo(0, 0);
+            pageNum = parseInt(btn.dataset.p);
+            render();
+            $('cr-rbody')?.scrollTo(0, 0);
         }
     });
 
     // Playlist close
-    document.getElementById('cr-pl-close')?.addEventListener('click', stopPlaylistMode);
+    $('cr-pl-x')?.addEventListener('click', () => {
+        playlistMode = false;
+        stopPlay();
+        render();
+    });
 
-    // Sentence click (play + read aloud)
-    document.getElementById('cr-reader-body')?.addEventListener('click', e => {
-        // Word click
-        const word = e.target.closest('.cr-word');
-        if (word) {
-            e.preventDefault();
-            e.stopPropagation();
-            onClickWord(word);
-            return;
-        }
-        // Sentence click
-        const sent = e.target.closest('.cr-sentence');
+    // Controls
+    $('cr-play')?.addEventListener('click', togglePlay);
+    $('cr-prev')?.addEventListener('click', () => navSent(-1));
+    $('cr-next')?.addEventListener('click', () => navSent(1));
+    $('cr-loop')?.addEventListener('click', () => { S.settings.loop = !S.settings.loop; saveState(); render(); });
+    $('cr-spd')?.addEventListener('click', () => {
+        const sp = [0.5, 0.7, 0.8, 1.0, 1.2, 1.5, 2.0];
+        const ci = sp.indexOf(S.settings.deRate);
+        S.settings.deRate = sp[(ci + 1) % sp.length];
+        saveState(); render();
+    });
+    $('cr-golist')?.addEventListener('click', goBackToList);
+
+    // Sentence click
+    $('cr-rbody')?.addEventListener('click', e => {
+        const w = e.target.closest('.cr-w');
+        if (w) { e.preventDefault(); e.stopPropagation(); onClickW(w); return; }
+        const sent = e.target.closest('.cr-sent');
         if (sent) {
             const idx = parseInt(sent.dataset.si);
             if (!isNaN(idx)) {
-                sentIdx = idx;
-                if (!readerPlaying) renderReader();
-                const art = articles[currentArticleIdx];
-                if (art && art.sentences[idx]) {
+                sentIdx = idx; savePosition();
+                if (!playing) render();
+                const art = getArt();
+                if (art?.sentences[idx]) {
                     const s = art.sentences[idx];
-                    const en = (s.en || '').replace(/\|/g, '');
-                    const cn = audioMode === 'cnenmix' ? (s.cn || '').replace(/\|/g, '') : '';
-                    cancelSpeech();
-                    speakOne(en, 'en-US', deRate).then(() => {
-                        if (cn) speakOne(cn, 'zh-CN', zhRate);
+                    cs();
+                    s1((s.en||'').replace(/\|/g,''), 'en-US', S.settings.deRate).then(() => {
+                        if (S.settings.audioMode === 'cnenmix' && s.cn) s1((s.cn||'').replace(/\|/g,''), 'zh-CN', S.settings.zhRate);
                     });
                 }
             }
@@ -896,45 +911,62 @@ function bindEvents() {
     });
 
     // Settings inputs
-    document.getElementById('cr-settings-body')?.addEventListener('input', e => {
-        if (e.target.id === 'cr-de-rate') {
-            deRate = parseFloat(e.target.value);
-            const val = document.getElementById('cr-de-val');
-            if (val) val.textContent = deRate.toFixed(1) + 'x';
+    $('cr-set')?.addEventListener('input', e => {
+        if (e.target.id === 'cr-s-dr') {
+            S.settings.deRate = parseFloat(e.target.value);
+            const v = $('cr-v-dr'); if (v) v.textContent = S.settings.deRate.toFixed(1) + 'x';
+            saveState();
         }
-        if (e.target.id === 'cr-zh-rate') {
-            zhRate = parseFloat(e.target.value);
-            const val = document.getElementById('cr-zh-val');
-            if (val) val.textContent = zhRate.toFixed(1) + 'x';
+        if (e.target.id === 'cr-s-zr') {
+            S.settings.zhRate = parseFloat(e.target.value);
+            const v = $('cr-v-zr'); if (v) v.textContent = S.settings.zhRate.toFixed(1) + 'x';
+            saveState();
         }
     });
 
-    // Global word clicks (for tips)
+    // Global tooltip dismiss
     document.addEventListener('click', e => {
-        if (!e.target.closest('.cr-tip') && !e.target.closest('.cr-word')) {
-            hideTip();
-        }
+        if (!e.target.closest('.cr-tip') && !e.target.closest('.cr-w')) hideTip();
     });
 
-    // Keyboard shortcuts
+    // Keyboard
     document.addEventListener('keydown', e => {
-        const panel = document.getElementById('cr-panel');
-        if (!panel || !panel.classList.contains('cr-open')) return;
-        if (currentView !== 'reader') return;
+        const ov = $('cr-overlay');
+        if (!ov || !ov.classList.contains('cr-open')) return;
+        if ($('cr-v-reader')?.classList.contains('cr-active') === false) return;
         const tag = e.target.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
         if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
-        if (e.key === 'ArrowLeft') { e.preventDefault(); navSentence(-1); }
-        if (e.key === 'ArrowRight') { e.preventDefault(); navSentence(1); }
-        if (e.key === 'Escape') { e.preventDefault(); switchToView('list'); }
+        if (e.key === 'ArrowLeft') { e.preventDefault(); navSent(-1); }
+        if (e.key === 'ArrowRight') { e.preventDefault(); navSent(1); }
+        if (e.key === 'Escape') { e.preventDefault(); goBackToList(); }
+    });
+
+    // Visibility change for background playback
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && playing) {
+            // Page became visible again - speech might have been interrupted
+            // The playStep timeout should still be running
+        }
+    });
+
+    // Window resize - fix FAB position
+    window.addEventListener('resize', () => {
+        const fab = $('cr-fab');
+        if (fab) {
+            let x = parseInt(fab.style.left), y = parseInt(fab.style.top);
+            x = Math.max(0, Math.min(window.innerWidth - 56, x));
+            y = Math.max(0, Math.min(window.innerHeight - 56, y));
+            fab.style.left = x + 'px'; fab.style.top = y + 'px';
+        }
     });
 }
 
-// ========== Initialization ==========
+// ===== Init =====
 jQuery(async () => {
+    loadState();
     createUI();
     bindEvents();
     initVoices();
-    console.log(`[${EXT_NAME}] Loaded successfully`);
+    console.log(`[${NAME}] v2.0 loaded`);
 });
