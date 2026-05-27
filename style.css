@@ -1,3 +1,34 @@
+/* ===== Extension Settings Area ===== */
+#cr-settings-block {
+    padding: 8px;
+}
+
+#cr-settings-block .cr-open-btn {
+    width: 100%;
+    padding: 10px 0;
+    border-radius: 8px;
+    border: 2px solid #000;
+    background: #000;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: 'KaiTi', '楷体', 'STKaiti', sans-serif;
+    margin-bottom: 6px;
+    -webkit-tap-highlight-color: transparent;
+}
+
+#cr-settings-block .cr-open-btn:active {
+    opacity: 0.8;
+}
+
+#cr-settings-block .cr-desc {
+    font-size: 12px;
+    color: #888;
+    line-height: 1.6;
+}
+
+/* ===== Full Screen Panel ===== */
 #cr-panel {
     position: fixed;
     top: 0;
@@ -5,11 +36,11 @@
     width: 100vw;
     height: 100vh;
     height: 100dvh;
-    z-index: 99999;
+    z-index: 2147483647;
     display: none;
     flex-direction: column;
-    background: #fff;
-    color: #000;
+    background: #ffffff;
+    color: #000000;
     font-family: 'KaiTi', '楷体', 'STKaiti', 'Kaiti SC', 'SimKai', serif;
     font-size: 15px;
     line-height: 1.7;
@@ -20,27 +51,27 @@
     display: flex;
 }
 
-/* ========== TOP BAR ========== */
+/* ===== Top Bar ===== */
 .cr-topbar {
     display: flex;
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    background: #fff;
-    border-bottom: 2px solid #000;
+    background: #ffffff;
+    border-bottom: 2px solid #000000;
     flex-shrink: 0;
-    min-height: 38px;
+    min-height: 40px;
 }
 
 .cr-topbar-back {
     display: none;
-    width: 30px;
-    height: 30px;
+    width: 32px;
+    height: 32px;
     border-radius: 6px;
     border: 1px solid #000;
     background: #fff;
     color: #000;
-    font-size: 14px;
+    font-size: 16px;
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -54,22 +85,22 @@
 
 .cr-topbar-title {
     flex: 1;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 700;
-    color: #000;
+    color: #000000;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
 .cr-topbtn {
-    width: 30px;
-    height: 30px;
+    width: 32px;
+    height: 32px;
     border-radius: 6px;
     border: 1px solid #000;
     background: #fff;
     color: #000;
-    font-size: 13px;
+    font-size: 14px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -82,14 +113,14 @@
     background: #eee;
 }
 
-/* ========== BODY ========== */
+/* ===== Body Layout ===== */
 .cr-body {
     display: flex;
     flex: 1;
     overflow: hidden;
 }
 
-/* ========== SIDEBAR ========== */
+/* ===== Sidebar ===== */
 .cr-sidebar {
     display: flex;
     flex-direction: column;
@@ -100,13 +131,13 @@
 }
 
 .cr-sidebar.hide {
-    display: none;
+    display: none !important;
 }
 
 .cr-chartabs {
     display: flex;
     gap: 4px;
-    padding: 6px 6px;
+    padding: 6px;
     overflow-x: auto;
     border-bottom: 1px solid #ccc;
     flex-shrink: 0;
@@ -114,8 +145,8 @@
 }
 
 .cr-chartab {
-    padding: 4px 10px;
-    border-radius: 12px;
+    padding: 5px 12px;
+    border-radius: 14px;
     border: 1px solid #000;
     background: #fff;
     color: #000;
@@ -143,10 +174,10 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 7px 8px;
-    margin-bottom: 2px;
+    padding: 8px 10px;
+    margin-bottom: 3px;
     background: #fff;
-    border: 1px solid #ccc;
+    border: 1px solid #bbb;
     border-radius: 6px;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
@@ -157,18 +188,17 @@
 }
 
 .cr-artcard.playing {
-    border-color: #000;
-    border-width: 2px;
+    border: 2px solid #000;
     font-weight: 700;
 }
 
 .cr-artcard.lastview {
-    border-left: 3px solid #000;
+    border-left: 4px solid #000;
 }
 
 .cr-artnum {
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     border-radius: 50%;
     background: #eee;
     color: #000;
@@ -186,7 +216,7 @@
 }
 
 .cr-artname {
-    font-size: 12px;
+    font-size: 13px;
     color: #000;
     white-space: nowrap;
     overflow: hidden;
@@ -200,10 +230,10 @@
 
 .cr-artbadge {
     font-size: 10px;
-    padding: 1px 5px;
+    padding: 2px 6px;
     border-radius: 6px;
     background: #eee;
-    color: #666;
+    color: #555;
     flex-shrink: 0;
 }
 
@@ -213,35 +243,35 @@
     color: #999;
     font-weight: 700;
     border-bottom: 1px solid #eee;
-    margin-top: 2px;
+    margin-top: 3px;
 }
 
 .cr-empty {
     padding: 30px 12px;
     text-align: center;
-    color: #aaa;
-    font-size: 13px;
+    color: #999;
+    font-size: 14px;
     line-height: 2;
 }
 
 .cr-playallwrap {
     text-align: center;
-    padding: 10px;
+    padding: 12px;
 }
 
 .cr-playallbtn {
-    padding: 6px 16px;
-    border-radius: 14px;
-    border: 1px solid #000;
+    padding: 8px 20px;
+    border-radius: 16px;
+    border: 2px solid #000;
     background: #000;
     color: #fff;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
     font-family: inherit;
     -webkit-tap-highlight-color: transparent;
 }
 
-/* ========== MAIN ========== */
+/* ===== Main Content ===== */
 .cr-main {
     flex: 1;
     display: flex;
@@ -250,10 +280,10 @@
 }
 
 .cr-main.hide {
-    display: none;
+    display: none !important;
 }
 
-/* ========== VIEWS ========== */
+/* ===== Views ===== */
 .cr-view {
     display: none;
     flex-direction: column;
@@ -265,7 +295,7 @@
     display: flex;
 }
 
-/* ========== TOOLBAR ========== */
+/* ===== Toolbar ===== */
 .cr-toolbar {
     display: flex;
     gap: 3px;
@@ -278,9 +308,9 @@
 }
 
 .cr-tbtn {
-    padding: 3px 8px;
+    padding: 4px 9px;
     border-radius: 10px;
-    border: 1px solid #999;
+    border: 1px solid #888;
     background: #fff;
     color: #000;
     font-size: 11px;
@@ -299,13 +329,13 @@
 
 .cr-tsep {
     width: 1px;
-    height: 14px;
+    height: 16px;
     background: #ccc;
     align-self: center;
     flex-shrink: 0;
 }
 
-/* ========== FONT/MODE BARS ========== */
+/* ===== Option Bars ===== */
 .cr-optbar {
     display: flex;
     gap: 3px;
@@ -319,13 +349,13 @@
 .cr-optbar label {
     font-size: 11px;
     color: #888;
-    margin-right: 2px;
+    margin-right: 3px;
 }
 
 .cr-optbtn {
-    padding: 2px 7px;
+    padding: 3px 8px;
     border-radius: 8px;
-    border: 1px solid #999;
+    border: 1px solid #888;
     background: #fff;
     color: #000;
     font-size: 11px;
@@ -340,12 +370,12 @@
     border-color: #000;
 }
 
-/* ========== PLAYLIST BAR ========== */
+/* ===== Playlist Bar ===== */
 .cr-plbar {
     display: none;
     align-items: center;
     gap: 4px;
-    padding: 3px 8px;
+    padding: 4px 8px;
     background: #fffff0;
     border-bottom: 1px solid #ddd;
     font-size: 11px;
@@ -364,7 +394,7 @@
     white-space: nowrap;
 }
 
-/* ========== PROGRESS ========== */
+/* ===== Progress ===== */
 .cr-progress {
     padding: 3px 10px;
     background: #fff;
@@ -394,7 +424,7 @@
     margin-top: 1px;
 }
 
-/* ========== PAGER ========== */
+/* ===== Pager ===== */
 .cr-pager {
     display: none;
     align-items: center;
@@ -412,10 +442,10 @@
 }
 
 .cr-pgbtn {
-    min-width: 26px;
-    height: 22px;
-    padding: 0 4px;
-    border: 1px solid #999;
+    min-width: 28px;
+    height: 24px;
+    padding: 0 5px;
+    border: 1px solid #888;
     border-radius: 4px;
     background: #fff;
     color: #000;
@@ -442,25 +472,25 @@
 .cr-pgmeta {
     font-size: 10px;
     color: #aaa;
-    padding: 0 2px;
+    padding: 0 3px;
 }
 
-/* ========== READER BODY ========== */
+/* ===== Reader ===== */
 .cr-reader {
     flex: 1;
     overflow-y: auto;
     padding: 6px;
     -webkit-overflow-scrolling: touch;
-    background: #fff;
+    background: #ffffff;
 }
 
-/* ========== SENTENCES ========== */
+/* ===== Sentences ===== */
 .cr-sent {
     margin-bottom: 6px;
     padding: 8px 10px;
     border-radius: 6px;
-    border: 1px solid #ddd;
-    background: #fff;
+    border: 1px solid #ccc;
+    background: #ffffff;
     cursor: pointer;
     position: relative;
     -webkit-tap-highlight-color: transparent;
@@ -468,18 +498,17 @@
 
 .cr-sent.active {
     background: #fffff0;
-    border-color: #000;
-    border-width: 2px;
+    border: 2px solid #000000;
 }
 
 .cr-sent.done {
-    border-left: 3px solid #000;
+    border-left: 4px solid #000;
 }
 
 .cr-sentnum {
     position: absolute;
     top: 2px;
-    right: 5px;
+    right: 6px;
     font-size: 9px;
     color: #ccc;
 }
@@ -488,21 +517,21 @@
     font-family: 'KaiTi', '楷体', 'STKaiti', Georgia, serif;
     line-height: 1.7;
     margin-bottom: 3px;
-    color: #000;
-    font-weight: 500;
+    color: #000000;
+    font-weight: 600;
 }
 
 .cr-cn {
-    color: #000;
+    color: #000000;
     line-height: 1.6;
-    opacity: 0.65;
+    opacity: 0.6;
 }
 
 .cr-ww {
     font-family: 'KaiTi', '楷体', 'STKaiti', Georgia, serif;
     line-height: 1.6;
-    color: #000;
-    opacity: 0.55;
+    color: #000000;
+    opacity: 0.5;
     margin-top: 3px;
     background: #fffff0;
     padding: 3px 8px;
@@ -514,7 +543,7 @@
     display: none !important;
 }
 
-/* font sizes */
+/* ===== Font Sizes ===== */
 .fs-s .cr-en { font-size: 14px; }
 .fs-s .cr-cn { font-size: 12px; }
 .fs-s .cr-ww { font-size: 11px; }
@@ -523,15 +552,15 @@
 .fs-m .cr-cn { font-size: 14px; }
 .fs-m .cr-ww { font-size: 13px; }
 
-.fs-l .cr-en { font-size: 20px; }
-.fs-l .cr-cn { font-size: 16px; }
+.fs-l .cr-en { font-size: 21px; }
+.fs-l .cr-cn { font-size: 17px; }
 .fs-l .cr-ww { font-size: 15px; }
 
-.fs-xl .cr-en { font-size: 24px; }
-.fs-xl .cr-cn { font-size: 18px; }
-.fs-xl .cr-ww { font-size: 17px; }
+.fs-xl .cr-en { font-size: 25px; }
+.fs-xl .cr-cn { font-size: 20px; }
+.fs-xl .cr-ww { font-size: 18px; }
 
-/* ========== WORD CLICK ========== */
+/* ===== Clickable Words ===== */
 .cr-word {
     cursor: pointer;
     border-bottom: 1px dashed transparent;
@@ -552,22 +581,22 @@
     border-bottom-color: #000;
 }
 
-/* ========== TOOLTIP ========== */
+/* ===== Tooltip ===== */
 .cr-tooltip {
     position: fixed;
-    z-index: 100010;
+    z-index: 2147483647;
     background: #000;
     color: #fff;
-    padding: 4px 10px;
+    padding: 5px 12px;
     border-radius: 6px;
-    font-size: 13px;
-    max-width: 200px;
+    font-size: 14px;
+    max-width: 220px;
     text-align: center;
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.15s;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    line-height: 1.3;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+    line-height: 1.4;
     font-family: 'KaiTi', '楷体', sans-serif;
 }
 
@@ -575,21 +604,21 @@
     opacity: 1;
 }
 
-/* ========== CONTROLS ========== */
+/* ===== Controls ===== */
 .cr-controls {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    padding: 6px 8px;
-    background: #fff;
+    padding: 8px 10px;
+    background: #ffffff;
     border-top: 2px solid #000;
     flex-shrink: 0;
 }
 
 .cr-ctrl {
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
     border-radius: 50%;
     border: 1px solid #000;
     background: #fff;
@@ -608,17 +637,17 @@
 }
 
 .cr-ctrl.playbtn {
-    width: 44px;
-    height: 44px;
+    width: 46px;
+    height: 46px;
     background: #000;
     color: #fff;
     border-color: #000;
-    font-size: 16px;
+    font-size: 18px;
 }
 
 .cr-ctrl.playbtn.on {
-    background: #c00;
-    border-color: #c00;
+    background: #cc0000;
+    border-color: #cc0000;
 }
 
 .cr-ctrl.loopon {
@@ -629,7 +658,7 @@
 .cr-speedbtn {
     font-size: 11px;
     color: #000;
-    padding: 2px 8px;
+    padding: 3px 8px;
     border: 1px solid #000;
     border-radius: 8px;
     background: #fff;
@@ -639,34 +668,34 @@
     -webkit-tap-highlight-color: transparent;
 }
 
-/* ========== WELCOME ========== */
+/* ===== Welcome ===== */
 .cr-welcome {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     flex: 1;
-    padding: 20px;
+    padding: 24px;
     text-align: center;
 }
 
 .cr-welcome h3 {
-    font-size: 16px;
+    font-size: 18px;
     color: #000;
-    margin: 6px 0;
+    margin: 8px 0;
     font-weight: 700;
 }
 
 .cr-welcome p {
-    font-size: 13px;
-    line-height: 1.8;
-    max-width: 340px;
-    color: #666;
+    font-size: 14px;
+    line-height: 1.9;
+    max-width: 350px;
+    color: #555;
 }
 
-/* ========== SETTINGS ========== */
+/* ===== Settings View ===== */
 .cr-setbody {
-    padding: 12px;
+    padding: 14px;
     overflow-y: auto;
     flex: 1;
 }
@@ -675,7 +704,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 0;
+    padding: 8px 0;
     border-bottom: 1px solid #eee;
 }
 
@@ -687,43 +716,43 @@
 .cr-setrow .val {
     font-size: 12px;
     color: #888;
-    min-width: 30px;
+    min-width: 32px;
     text-align: right;
 }
 
 .cr-setbody input[type=range] {
-    width: 80px;
+    width: 90px;
     accent-color: #000;
 }
 
 .cr-setinfo {
-    margin-top: 12px;
-    padding: 10px;
-    background: #f8f8f8;
-    border: 1px solid #eee;
+    margin-top: 14px;
+    padding: 12px;
+    background: #f5f5f5;
+    border: 1px solid #ddd;
     border-radius: 6px;
-    font-size: 12px;
-    color: #666;
-    line-height: 1.9;
+    font-size: 13px;
+    color: #555;
+    line-height: 2;
 }
 
-/* ========== TOAST ========== */
+/* ===== Toast ===== */
 .cr-toast {
     position: fixed;
-    bottom: 70px;
+    bottom: 80px;
     left: 50%;
     transform: translateX(-50%) translateY(20px);
     background: #000;
     color: #fff;
-    padding: 5px 16px;
-    border-radius: 14px;
-    font-size: 12px;
+    padding: 6px 18px;
+    border-radius: 16px;
+    font-size: 13px;
     opacity: 0;
     transition: all 0.3s;
-    z-index: 100020;
+    z-index: 2147483647;
     pointer-events: none;
     white-space: nowrap;
-    max-width: 85vw;
+    max-width: 86vw;
     font-family: 'KaiTi', '楷体', sans-serif;
 }
 
@@ -732,29 +761,27 @@
     transform: translateX(-50%) translateY(0);
 }
 
-/* ========== DESKTOP ========== */
+/* ===== Desktop ===== */
 @media (min-width: 769px) {
     .cr-sidebar {
-        width: 260px;
-        min-width: 260px;
+        width: 270px;
+        min-width: 270px;
     }
 }
 
-/* ========== MOBILE ========== */
+/* ===== Mobile ===== */
 @media (max-width: 768px) {
     .cr-body {
         flex-direction: column;
     }
-
     .cr-sidebar {
         width: 100%;
         flex: 1;
         border-right: none;
         border-bottom: 1px solid #000;
     }
-
     .cr-controls {
-        padding-bottom: max(6px, env(safe-area-inset-bottom));
+        padding-bottom: max(8px, env(safe-area-inset-bottom));
     }
 }
 
