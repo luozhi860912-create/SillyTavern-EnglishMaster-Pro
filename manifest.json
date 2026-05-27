@@ -1,12 +1,12 @@
 {
-    "display_name": "EnglishMaster Pro",
-    "loading_order": 30,
+    "display_name": "Chat Article Reader",
+    "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "EnglishMaster",
+    "author": "ChatReader",
     "version": "1.0.0",
-    "homePage": "",
+    "homePage": "https://github.com/your-repo/SillyTavern-ChatReader",
     "auto_update": true
 }
